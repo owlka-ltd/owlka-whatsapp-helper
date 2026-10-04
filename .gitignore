@@ -1,0 +1,5 @@
+dist/
+*.db
+*.db-*
+/owlka-whatsapp
+/owlka-whatsapp-helper
