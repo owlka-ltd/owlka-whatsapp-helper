@@ -320,6 +320,84 @@ func TestRuleNoBulk_TheSameTextToManyChatsIsRefused(t *testing.T) {
 	}
 }
 
+// ---- EXPLICIT APPROVAL: lifts the bulk rules, never the pacing ---------------
+
+func TestApproved_TheSameTextReachesEveryChatThePersonApproved(t *testing.T) {
+	r := newRig(t)
+	chats := []string{alice}
+	for i := 0; i < 6; i++ {
+		c := fmt.Sprintf("44770090100%d@s.whatsapp.net", i)
+		r.incoming(c, fmt.Sprintf("X%d", i), "hello")
+		chats = append(chats, c)
+	}
+	for _, c := range chats {
+		if status, msg := r.send(map[string]any{"to": c, "text": "Party on Friday!", "approved": true}); status != 200 {
+			t.Fatalf("an approved send to %s was refused: %s", c, msg)
+		}
+		r.clock = r.clock.Add(2 * time.Minute)
+	}
+	if got := len(r.client.sent); got != len(chats) {
+		t.Fatalf("%d of %d approved sends went out", got, len(chats))
+	}
+	// The very next one WITHOUT approval is still a broadcast.
+	extra := "447700901099@s.whatsapp.net"
+	r.incoming(extra, "Late", "hello")
+	if status, msg := r.send(map[string]any{"to": extra, "text": "Party on Friday!"}); status != 429 || !strings.HasPrefix(msg, "broadcast:") {
+		t.Fatalf("without approval want a broadcast refusal, got %d %s", status, msg)
+	}
+}
+
+func TestApproved_ANewNumberNeedsNoRepeatAndTheDailyCapIsLifted(t *testing.T) {
+	r := newRig(t)
+	for i := 0; i < DefaultLimits.NewNumbersPerDay+3; i++ {
+		n := fmt.Sprintf("44770090200%d", i)
+		r.client.onWA[n] = true
+		r.clock = r.clock.Add(5 * time.Minute)
+		if status, msg := r.send(map[string]any{"to": n, "text": fmt.Sprintf("note %d", i), "approved": true}); status != 200 {
+			t.Fatalf("approved new number %d refused: %s", i, msg)
+		}
+	}
+	// Approval does not make a number exist.
+	if status, msg := r.send(map[string]any{"to": "+447700900444", "text": "x", "approved": true}); status == 200 || !strings.Contains(msg, "not on WhatsApp") {
+		t.Fatalf("want not-on-WhatsApp, got %d %s", status, msg)
+	}
+}
+
+func TestApproved_PacingIsNeverLifted(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	var hist []SendRecord
+	for i := 0; i < DefaultLimits.PerMinute; i++ {
+		hist = append(hist, SendRecord{At: now.Add(-time.Duration(i+1) * 5 * time.Second), Chat: fmt.Sprint(i), TextHash: fmt.Sprint(i)})
+	}
+	if r := CheckSend(hist, now, SendRecord{Chat: "n", TextHash: "n"}, DefaultLimits, true); r == nil || r.Code != "rate_limited" {
+		t.Fatalf("an approved send beat the per-minute pace: %v", r)
+	}
+	// The hour and day totals are bulk caps, and approval lifts them.
+	hist = nil
+	for i := 0; i < DefaultLimits.PerDay+10; i++ {
+		hist = append(hist, SendRecord{At: now.Add(-2*time.Minute - time.Duration(i)*time.Minute), Chat: fmt.Sprint(i), TextHash: "same"})
+	}
+	if r := CheckSend(hist, now, SendRecord{Chat: "n", TextHash: "same"}, DefaultLimits, true); r != nil {
+		t.Fatalf("an approved bulk send was refused: %v", r)
+	}
+	if r := CheckSend(hist, now, SendRecord{Chat: "n", TextHash: "same"}, DefaultLimits, false); r == nil {
+		t.Fatal("the same send without approval went through")
+	}
+	// The gap and the typing delay still run for an approved send.
+	rig := newRig(t)
+	rig.send(map[string]any{"to": alice, "text": "one", "approved": true})
+	rig.send(map[string]any{"to": alice, "text": "two", "approved": true})
+	var gap time.Duration
+	for _, d := range rig.sleeps {
+		if d > gap {
+			gap = d
+		}
+	}
+	if len(rig.sleeps) < 2 || gap <= 0 {
+		t.Fatalf("approved sends were not paced: %v", rig.sleeps)
+	}
+}
+
 // ---- PRODUCT RULE 3: paced like a person -----------------------------------
 
 func TestRulePacing_TypingShowsAndTimePassesBeforeTheMessageGoes(t *testing.T) {
@@ -399,17 +477,17 @@ func TestRulePacing_HourAndDayLimits(t *testing.T) {
 	for i := 0; i < DefaultLimits.PerHour; i++ {
 		hist = append(hist, SendRecord{At: now.Add(-time.Duration(i+2) * 50 * time.Second), Chat: "a", TextHash: fmt.Sprint(i)})
 	}
-	if r := CheckSend(hist, now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits); r == nil || r.Code != "rate_limited" {
+	if r := CheckSend(hist, now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits, false); r == nil || r.Code != "rate_limited" {
 		t.Fatalf("hour limit not applied: %v", r)
 	}
 	hist = nil
 	for i := 0; i < DefaultLimits.PerDay; i++ {
 		hist = append(hist, SendRecord{At: now.Add(-2*time.Hour - time.Duration(i)*time.Minute), Chat: "a", TextHash: fmt.Sprint(i)})
 	}
-	if r := CheckSend(hist, now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits); r == nil || r.Code != "rate_limited" {
+	if r := CheckSend(hist, now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits, false); r == nil || r.Code != "rate_limited" {
 		t.Fatalf("day limit not applied: %v", r)
 	}
-	if r := CheckSend(hist[:10], now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits); r != nil {
+	if r := CheckSend(hist[:10], now, SendRecord{Chat: "a", TextHash: "n"}, DefaultLimits, false); r != nil {
 		t.Fatalf("ordinary use refused: %v", r)
 	}
 }

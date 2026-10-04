@@ -625,6 +625,12 @@ type SendRequest struct {
 	ReplyTo          string `json:"reply_to"`
 	File             string `json:"file"`
 	ConfirmNewNumber string `json:"confirm_new_number"`
+	// Approved is set by the caller only when the person has explicitly
+	// approved THIS send in their own words (Owlka's approval check decides
+	// that, and writes a one-use grant the connector reads; the assistant has
+	// no argument that sets it). It lifts the bulk and new-number rules. It
+	// never lifts the pacing: see CheckSend.
+	Approved bool `json:"approved"`
 }
 
 type SendResult struct {
@@ -659,10 +665,11 @@ func (m *Manager) Send(ctx context.Context, req SendRequest) (*SendResult, *Refu
 		if to.Server != types.DefaultUserServer {
 			return nil, refuse("unknown_chat", "%s is not a chat this number is in, so nothing was sent.", chat)
 		}
-		if digits(req.ConfirmNewNumber) != to.User {
+		if !req.Approved && digits(req.ConfirmNewNumber) != to.User {
 			return nil, refuse("unknown_number",
 				"There is no existing chat with +%s, so nothing was sent. A first message to a new number is only sent "+
-					"when the person has asked for that exact number: repeat it in confirm_new_number.", to.User)
+					"when the person has asked for that exact number: repeat it in confirm_new_number. "+
+					"Or ask the person to confirm this send in so many words, then send it again.", to.User)
 		}
 		newNumber = true
 	}
@@ -702,7 +709,7 @@ func (m *Manager) Send(ctx context.Context, req SendRequest) (*SendResult, *Refu
 		return nil, refuse("store", "The local message store could not be read: %v", err)
 	}
 	history = append(history, a.unrecorded...)
-	if r := CheckSend(history, m.now(), record, m.limits); r != nil {
+	if r := CheckSend(history, m.now(), record, m.limits, req.Approved); r != nil {
 		return nil, r
 	}
 	if newNumber {

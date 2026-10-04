@@ -80,7 +80,15 @@ func TextHash(text string) string {
 // CheckSend decides whether one more send is allowed now, given the sends
 // already made from this number in the last day. It never queues: a refused
 // send is reported, so nothing goes out later without anyone watching.
-func CheckSend(history []SendRecord, now time.Time, next SendRecord, l Limits) *Refusal {
+//
+// approved means the person explicitly approved this send in their own words
+// (Tim, 2026-10-05: "if someone says 'spam everyone' let them approve that
+// but it must be explicit"). It is their number and their decision, so it
+// lifts the rules that exist to stop an ACCIDENTAL mass send: same text to
+// many chats, the new-number cap, and the hour and day totals. It never lifts
+// the pacing (PerMinute here, MinGap and the typing delay in Send): an
+// approved bulk send still goes out at the speed a person types.
+func CheckSend(history []SendRecord, now time.Time, next SendRecord, l Limits, approved bool) *Refusal {
 	var minute, hour, day, newToday int
 	sameText := map[string]bool{}
 	for _, s := range history {
@@ -102,26 +110,37 @@ func CheckSend(history []SendRecord, now time.Time, next SendRecord, l Limits) *
 			minute++
 		}
 	}
-	switch {
-	case len(sameText) >= l.SameTextChatsPerHour:
-		return refuse("broadcast",
-			"This same message has already gone to %d other chats in the last hour. "+
-				"Sending one message to many people is what gets a WhatsApp number restricted, so it was not sent.",
-			len(sameText))
-	case next.NewNumber && newToday >= l.NewNumbersPerDay:
-		return refuse("new_number_limit",
-			"%d numbers with no earlier chat have already been messaged today, which is the limit. "+
-				"Messaging many new numbers is what gets a WhatsApp number restricted, so it was not sent. Try again tomorrow.",
-			newToday)
-	case minute >= l.PerMinute:
+	const askFirst = "If the person really wants this, ask them to confirm it in so many words, then send it again."
+	// The bulk rules: what an explicit approval lifts.
+	if !approved {
+		switch {
+		case len(sameText) >= l.SameTextChatsPerHour:
+			return refuse("broadcast",
+				"This same message has already gone to %d other chats in the last hour. "+
+					"Sending one message to many people is what gets a WhatsApp number restricted, so it was not sent. "+askFirst,
+				len(sameText))
+		case next.NewNumber && newToday >= l.NewNumbersPerDay:
+			return refuse("new_number_limit",
+				"%d numbers with no earlier chat have already been messaged today, which is the limit. "+
+					"Messaging many new numbers is what gets a WhatsApp number restricted, so it was not sent. "+askFirst,
+				newToday)
+		}
+	}
+	// Pacing: approval never lifts it.
+	if minute >= l.PerMinute {
 		return refuse("rate_limited",
 			"%d messages have gone out in the last minute, which is the limit. Wait a minute and send again.", minute)
+	}
+	if approved {
+		return nil
+	}
+	switch {
 	case hour >= l.PerHour:
 		return refuse("rate_limited",
-			"%d messages have gone out in the last hour, which is the limit. Try again later.", hour)
+			"%d messages have gone out in the last hour, which is the limit. Try again later. "+askFirst, hour)
 	case day >= l.PerDay:
 		return refuse("rate_limited",
-			"%d messages have gone out in the last day, which is the limit. Try again tomorrow.", day)
+			"%d messages have gone out in the last day, which is the limit. Try again tomorrow. "+askFirst, day)
 	}
 	return nil
 }

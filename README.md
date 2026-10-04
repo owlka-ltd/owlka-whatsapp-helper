@@ -36,6 +36,14 @@ rules live here, in the one program that can send:
    request repeats that exact number in `confirm_new_number`, and at most 3 such first
    messages go out per day.
 
+**When the person explicitly approves a send.** A caller may pass `"approved": true` on a
+send that the person has explicitly approved in their own words. It is their number and their
+decision, so approval lifts the limits that exist to stop an accidental mass send: the same
+text to many chats, the cap on first messages to new numbers (and the need to repeat the
+number), and the hourly and daily totals. It never lifts the pacing: typing still shows, sends
+are still at least 3 seconds apart, and there are still at most 8 a minute. A send still goes
+to one chat at a time. In Owlka, the approval check sets this, never the assistant.
+
 These guard against accidents. They are not a lock: the source is here and you can change it.
 
 Reading a chat does not tell the other person you have read it. Only "mark read" does.
