@@ -59,7 +59,7 @@ The session keys and the message history are stored unencrypted in the folder gi
 
 ## Build
 
-Needs Go 1.26 or newer. No C compiler is needed.
+Needs the Go version named in `go.mod` (1.27.1) or newer. No C compiler is needed.
 
 ```sh
 go test ./...

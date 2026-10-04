@@ -66,6 +66,10 @@ Refusal codes: `unknown_number`, `unknown_chat`, `broadcast`, `new_number_limit`
 `send_failed`, `upload_failed`, `no_file`, `file_too_big`, `no_message`, `ambiguous`,
 `no_chat`, `bad_chat`, `empty`, `cancelled`.
 
+Codes from other routes: `no_account`, `bad_number`, `link_failed`, `no_link`, `no_media`,
+`media_gone`, `store`, `bad_request`, `unauthorized`. Treat a code you do not know as a
+refusal and show its `message`.
+
 ## Linking
 
 `POST /link/start` opens a connection to WhatsApp and asks for a pairing code for that number.

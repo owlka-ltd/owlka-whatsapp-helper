@@ -718,7 +718,11 @@ func (m *Manager) Send(ctx context.Context, req SendRequest) (*SendResult, *Refu
 
 	// RULE: paced like a person. Never back to back, and typing shows first.
 	m.sleep(ctx, GapWait(a.lastSend, m.now(), m.limits))
-	typed := a.client.SetTyping(ctx, to, true) == nil
+	typingErr := a.client.SetTyping(ctx, to, true)
+	typed := typingErr == nil
+	// The wait below still happens, so the message is still paced; only the
+	// "typing" indicator is missing. Recorded so it is not a silent downgrade.
+	m.logErr("show typing", typingErr)
 	m.sleep(ctx, TypingDelay(len(req.Text), m.jitter()))
 	if typed {
 		defer func() { _ = a.client.SetTyping(context.Background(), to, false) }()

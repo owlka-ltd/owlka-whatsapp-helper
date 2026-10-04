@@ -767,6 +767,26 @@ func TestAFailedSendIsReportedAndNotCounted(t *testing.T) {
 	}
 }
 
+func TestASendTheStoreCouldNotRecordStillCountsTowardsTheLimits(t *testing.T) {
+	r := newRig(t)
+	r.m.limits.MinGap = 0
+	r.m.sleep = func(context.Context, time.Duration) {}
+	// The record of sends becomes unwritable: every send still goes, and
+	// every one must still be counted.
+	if _, err := r.m.store.db.Exec(`CREATE TRIGGER sends_unwritable BEFORE INSERT ON sends BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	for i := 0; i < DefaultLimits.PerMinute+3; i++ {
+		if status, _ := r.send(map[string]any{"to": alice, "text": fmt.Sprintf("message %d", i)}); status == 200 {
+			sent++
+		}
+	}
+	if sent != DefaultLimits.PerMinute || len(r.client.sent) != DefaultLimits.PerMinute {
+		t.Fatalf("%d messages went out with the send record broken; the limit is %d", len(r.client.sent), DefaultLimits.PerMinute)
+	}
+}
+
 func TestRemovingANumberUnlinksItAndDeletesItsHistory(t *testing.T) {
 	r := newRig(t)
 	os.MkdirAll(filepath.Join(r.dir, "media", me), 0o700)
