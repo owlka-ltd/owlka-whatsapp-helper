@@ -42,7 +42,7 @@ a chat or contact.
 | `GET /messages` | `account`, `chat`, `limit`, `before` | `{"chat", "messages": [...], "state"}`, oldest first |
 | `GET /search` | `account`, `query`, `chat`, `limit` | `{"messages": [...], "state"}`, newest first |
 | `GET /contacts` | `account`, `query`, `limit` | `{"contacts": [{"id", "number", "name", "profile_name", "has_chat", "is_group"}]}` |
-| `POST /send` | `{"account", "to", "text", "reply_to", "file", "confirm_new_number"}` | `{"chat", "id", "time", "new_number"}` |
+| `POST /send` | `{"account", "to", "text", "reply_to", "file", "confirm_new_number", "approved"}` | `{"chat", "id", "time", "new_number"}` |
 | `POST /read` | `{"account", "chat"}` | `{"chat", "marked"}` |
 | `POST /media` | `{"account", "chat", "id"}` | `{"path", "kind", "media_type", "file_name"}` |
 
@@ -60,6 +60,12 @@ message, or the caption when there is a file. `reply_to` is the id of a message 
 
 The request does not return until the message has gone, which includes the typing time, so
 allow up to 30 seconds. Closing the connection before then cancels the send.
+
+`approved` (boolean, default false) says the person explicitly approved this send in their
+own words. It lifts the `broadcast` and `new_number_limit` refusals, the hourly and daily
+`rate_limited` totals, and the need for `confirm_new_number`. It never lifts the pacing: the
+typing time, the gap between sends and the per-minute `rate_limited` limit always apply. Set
+it only from a check the assistant cannot answer for itself.
 
 Refusal codes: `unknown_number`, `unknown_chat`, `broadcast`, `new_number_limit`,
 `rate_limited`, `not_on_whatsapp`, `logged_out`, `restricted`, `outdated`, `offline`,
