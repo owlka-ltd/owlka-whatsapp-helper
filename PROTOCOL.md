@@ -36,7 +36,7 @@ a chat or contact.
 | `POST /shutdown` | | `{"ok": true}`, then the helper exits |
 | `GET /accounts` | | `{"accounts": [{"account", "number", "name", "state", "detail", "usable"}]}` |
 | `POST /accounts/remove` | `{"account"}` | Unlinks the number and deletes its keys, history and fetched files. `{"ok", "detail"}` |
-| `POST /link/start` | `{"phone"}` | `{"link_id", "state": "pending", "code": "ABCD-EFGH", "qr", "expires_in"}` |
+| `POST /link/start` | `{"phone"}` (empty or absent: link by QR code, no pairing code) | `{"link_id", "state": "pending", "code": "ABCD-EFGH", "qr", "expires_in"}` |
 | `POST /link/status` | `{"link_id"}` | The same shape. `state` is `pending`, `linked` (with `account`) or `failed` (with `error`) |
 | `GET /chats` | `account`, `query`, `unread=1`, `limit` | `{"chats": [{"chat", "name", "is_group", "unread", "last_time", "last_message"}], "state"}` |
 | `GET /messages` | `account`, `chat`, `limit`, `before` | `{"chat", "messages": [...], "state"}`, oldest first |
@@ -82,7 +82,11 @@ refusal and show its `message`.
 The connection stays open inside the helper. The person enters the code on their phone
 (WhatsApp, Settings, Linked devices, Link a device, Link with phone number instead). Poll
 `POST /link/status` every few seconds. The code lasts about 160 seconds. `qr` carries the
-current QR payload for a caller that can show one on another screen.
+current QR payload for a caller that can show one on another screen. WhatsApp offers
+several payloads at once (the first lasts 60 seconds, each later one 20); the helper
+moves to the next as each expires, so `qr` changes between polls and is empty once the
+last has run out. With an empty `phone` the helper skips the pairing code: `code` is
+absent, `qr` is the only way to link, and the attempt ends when the last payload expires.
 
 ## Files in the folder
 

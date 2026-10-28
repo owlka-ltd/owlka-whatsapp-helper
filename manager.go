@@ -28,6 +28,11 @@ import (
 
 const (
 	linkLifetime = 160 * time.Second // WhatsApp closes the linking socket after this
+	// WhatsApp hands out several QR payloads at once. The first is good for
+	// 60 seconds and each later one for 20; after the last the server closes
+	// the socket. It is the client's job to move from one to the next.
+	qrFirst      = 60 * time.Second
+	qrEach       = 20 * time.Second
 	maxFileBytes = 50 << 20
 )
 
@@ -81,7 +86,8 @@ type link struct {
 	state  string // pending | linked | failed
 	err    string
 	code   string
-	qr     string
+	codes  []string // every QR payload WhatsApp offered, shown one at a time
+	qrAt   time.Time
 	acct   string
 	closed bool
 }
@@ -218,7 +224,8 @@ func newID() string {
 // do that.
 func (m *Manager) StartLink(ctx context.Context, phone string) (*link, *Refusal) {
 	num := digits(phone)
-	if len(num) < 8 || strings.HasPrefix(num, "0") {
+	qrOnly := strings.TrimSpace(phone) == ""
+	if !qrOnly && (len(num) < 8 || strings.HasPrefix(num, "0")) {
 		return nil, refuse("bad_number",
 			"Enter the full number with its country code, for example +44 7700 900123.")
 	}
@@ -236,22 +243,39 @@ func (m *Manager) StartLink(ctx context.Context, phone string) (*link, *Refusal)
 	case <-time.After(10 * time.Second):
 	case <-ctx.Done():
 	}
-	code, err := l.client.PairPhone(ctx, num)
-	if err != nil {
-		l.client.Disconnect()
-		return nil, refuse("link_failed", "WhatsApp did not accept the request to link +%s. Check the number and try again.", num)
+	lifetime := linkLifetime
+	if qrOnly {
+		// Linking by QR code: no number, no pairing code. The phone scans
+		// what is on this screen, as it does for WhatsApp Web.
+		l.mu.Lock()
+		n := len(l.codes)
+		l.mu.Unlock()
+		if n == 0 {
+			l.client.Disconnect()
+			return nil, refuse("offline", "WhatsApp did not offer a QR code. Check this computer's internet connection and try again.")
+		}
+		lifetime = qrFirst + time.Duration(n-1)*qrEach
+		l.mu.Lock()
+		l.expires = l.qrAt.Add(lifetime)
+		l.mu.Unlock()
+	} else {
+		code, err := l.client.PairPhone(ctx, num)
+		if err != nil {
+			l.client.Disconnect()
+			return nil, refuse("link_failed", "WhatsApp did not accept the request to link +%s. Check the number and try again.", num)
+		}
+		if len(code) == 8 {
+			code = code[:4] + "-" + code[4:]
+		}
+		l.mu.Lock()
+		l.code = code
+		l.mu.Unlock()
 	}
-	if len(code) == 8 {
-		code = code[:4] + "-" + code[4:]
-	}
-	l.mu.Lock()
-	l.code = code
-	l.mu.Unlock()
 	m.mu.Lock()
 	m.links[l.id] = l
 	m.mu.Unlock()
 	// Give up when WhatsApp would: it closes the linking socket itself.
-	time.AfterFunc(linkLifetime, func() { m.endLink(l, "failed", expiredMsg) })
+	time.AfterFunc(lifetime, func() { m.endLink(l, "failed", expiredMsg) })
 	return l, nil
 }
 
@@ -276,7 +300,7 @@ func (m *Manager) handleLink(l *link, evt any, ready chan struct{}) {
 	case *events.QR:
 		if len(e.Codes) > 0 {
 			l.mu.Lock()
-			l.qr = e.Codes[0]
+			l.codes, l.qrAt = append([]string(nil), e.Codes...), m.now()
 			l.mu.Unlock()
 		}
 		select {
@@ -315,6 +339,23 @@ type LinkStatus struct {
 	Account   *AccountInfo `json:"account,omitempty"`
 }
 
+// currentQR is the QR payload that is valid now: WhatsApp's first for 60
+// seconds, then a new one every 20. Empty before any was offered and after the
+// last has run out. The caller holds l.mu.
+func (l *link) currentQR(now time.Time) string {
+	if len(l.codes) == 0 {
+		return ""
+	}
+	i := 0
+	if el := now.Sub(l.qrAt); el >= qrFirst {
+		i = 1 + int((el-qrFirst)/qrEach)
+	}
+	if i >= len(l.codes) {
+		return ""
+	}
+	return l.codes[i]
+}
+
 func (m *Manager) LinkStatus(id string) (*LinkStatus, *Refusal) {
 	m.mu.Lock()
 	l := m.links[id]
@@ -329,7 +370,7 @@ func (m *Manager) LinkStatus(id string) (*LinkStatus, *Refusal) {
 	defer l.mu.Unlock()
 	s := &LinkStatus{LinkID: l.id, State: l.state, Error: l.err}
 	if l.state == "pending" {
-		s.Code, s.QR = l.code, l.qr
+		s.Code, s.QR = l.code, l.currentQR(m.now())
 		if left := int(l.expires.Sub(m.now()).Seconds()); left > 0 {
 			s.ExpiresIn = left
 		}
