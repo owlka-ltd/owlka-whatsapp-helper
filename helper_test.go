@@ -40,18 +40,19 @@ type sent struct {
 }
 
 type fakeClient struct {
-	mu        sync.Mutex
-	jid       types.JID
-	connected bool
-	handler   func(any)
-	trace     *[]string // shared order-of-events log
-	sent      []sent
-	read      [][]string
-	onWA      map[string]bool
-	sendErr   error
-	loggedOut bool
-	forgotten bool
-	media     []byte
+	pairedPhone bool
+	mu          sync.Mutex
+	jid         types.JID
+	connected   bool
+	handler     func(any)
+	trace       *[]string // shared order-of-events log
+	sent        []sent
+	read        [][]string
+	onWA        map[string]bool
+	sendErr     error
+	loggedOut   bool
+	forgotten   bool
+	media       []byte
 }
 
 func (f *fakeClient) note(s string) {
@@ -70,7 +71,7 @@ func (f *fakeClient) emit(evt any) {
 func (f *fakeClient) SetHandler(fn func(any)) { f.mu.Lock(); f.handler = fn; f.mu.Unlock() }
 func (f *fakeClient) Connect() error {
 	if f.jid.IsEmpty() {
-		go f.emit(&events.QR{Codes: []string{"QR-PAYLOAD-1"}})
+		go f.emit(&events.QR{Codes: []string{"QR-PAYLOAD-1", "QR-PAYLOAD-2", "QR-PAYLOAD-3"}})
 		return nil
 	}
 	f.mu.Lock()
@@ -84,6 +85,7 @@ func (f *fakeClient) IsConnected() bool { f.mu.Lock(); defer f.mu.Unlock(); retu
 func (f *fakeClient) JID() types.JID    { f.mu.Lock(); defer f.mu.Unlock(); return f.jid }
 func (f *fakeClient) PushName() string  { return "Test Person" }
 func (f *fakeClient) PairPhone(_ context.Context, phone string) (string, error) {
+	f.pairedPhone = true
 	if phone == "15550000000" {
 		return "", errors.New("bad request")
 	}
@@ -598,7 +600,7 @@ func TestLinkingShowsACodeAndBecomesAnAccountWhenThePhoneEntersIt(t *testing.T) 
 
 func TestLinkingRefusesABadNumberAndExpires(t *testing.T) {
 	r := newRig(t)
-	for _, phone := range []string{"", "07700 900123", "12345"} {
+	for _, phone := range []string{"07700 900123", "12345"} {
 		if status, _ := r.call("POST", "/link/start", map[string]any{"phone": phone}); status != 400 {
 			t.Fatalf("%q accepted (status %d)", phone, status)
 		}
@@ -618,6 +620,46 @@ func TestLinkingRefusesABadNumberAndExpires(t *testing.T) {
 	last := r.back.made[len(r.back.made)-1]
 	if !last.forgotten {
 		t.Fatal("the abandoned session's keys were kept")
+	}
+}
+
+func TestLinkingByQRNeedsNoNumberAndMovesToTheNextCodeAsEachOneExpires(t *testing.T) {
+	r := newRig(t)
+	status, out := r.call("POST", "/link/start", map[string]any{})
+	if status != 200 || out["state"] != "pending" || out["qr"] != "QR-PAYLOAD-1" {
+		t.Fatalf("start: %d %v", status, out)
+	}
+	if _, has := out["code"]; has {
+		t.Fatalf("a pairing code was asked for in QR mode: %v", out)
+	}
+	if r.back.made[len(r.back.made)-1].pairedPhone {
+		t.Fatal("QR linking asked WhatsApp for a phone pairing code")
+	}
+	id := out["link_id"]
+	for _, c := range []struct {
+		after time.Duration
+		want  string
+	}{{59 * time.Second, "QR-PAYLOAD-1"}, {61 * time.Second, "QR-PAYLOAD-2"}, {81 * time.Second, "QR-PAYLOAD-3"}} {
+		r.clock = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC).Add(c.after)
+		if _, out = r.call("POST", "/link/status", map[string]any{"link_id": id}); out["qr"] != c.want {
+			t.Fatalf("after %v: qr %v, want %s", c.after, out["qr"], c.want)
+		}
+	}
+	// 60 + 20 + 20 seconds in, WhatsApp has nothing left to show: the attempt ends.
+	r.clock = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC).Add(101 * time.Second)
+	if _, out = r.call("POST", "/link/status", map[string]any{"link_id": id}); out["state"] != "failed" {
+		t.Fatalf("after the last code ran out: %v", out)
+	}
+}
+
+func TestLinkingByQRBecomesAnAccountWhenThePhoneScansIt(t *testing.T) {
+	r := newRig(t)
+	_, out := r.call("POST", "/link/start", map[string]any{"phone": ""})
+	id := out["link_id"]
+	r.back.made[len(r.back.made)-1].phoneEntersCode("447700900777")
+	_, out = r.call("POST", "/link/status", map[string]any{"link_id": id})
+	if out["state"] != "linked" {
+		t.Fatalf("after the scan: %v", out)
 	}
 }
 
