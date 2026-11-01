@@ -287,6 +287,20 @@ func (m *Manager) endLink(l *link, state, msg string) {
 		l.mu.Unlock()
 		return
 	}
+	if state == "failed" && !l.client.JID().IsEmpty() {
+		// The phone already paired: WhatsApp lists this computer under Linked
+		// devices and these keys are the only copy. Deleting them strands that
+		// entry on the phone, so keep the session as an account and let it
+		// finish connecting by itself.
+		l.mu.Unlock()
+		a := m.adopt(l.client)
+		l.mu.Lock()
+		if l.state == "pending" {
+			l.state, l.acct = "linked", a.id
+		}
+		l.mu.Unlock()
+		return
+	}
 	l.state, l.err = state, msg
 	l.mu.Unlock()
 	if state == "failed" {
