@@ -975,3 +975,55 @@ func waitFor(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("timed out waiting")
 }
+
+// 2026-11-01: a QR scan paired, then the helper hung at "connecting" for ever.
+// The link's Connected handler re-registered the event handler, and whatsmeow
+// dispatches events holding the lock that registering needs. This drives the
+// REAL whatsmeow client: swapping the handler from inside an event must return.
+func TestSwappingTheHandlerFromInsideAnEventDoesNotDeadlockWhatsmeow(t *testing.T) {
+	back, err := openMeow(context.Background(), filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := back.NewClient().(*meowClient)
+	second := make(chan any, 1)
+	c.SetHandler(func(evt any) {
+		c.SetHandler(func(evt any) { second <- evt })
+	})
+	done := make(chan struct{})
+	go func() {
+		c.cli.DangerousInternals().DispatchEvent(&events.Connected{})
+		c.cli.DangerousInternals().DispatchEvent(&events.Disconnected{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatch deadlocked when the handler was swapped from inside an event")
+	}
+	if _, ok := (<-second).(*events.Disconnected); !ok {
+		t.Fatal("the swapped-in handler did not receive the next event")
+	}
+}
+
+// A phone that has paired lists this computer under Linked devices. If the
+// login then takes longer than the QR window, the keys must be kept, not
+// deleted: deleting them strands the device on the phone.
+func TestAPairedLinkThatOutlivesItsWindowKeepsItsKeys(t *testing.T) {
+	r := newRig(t)
+	_, out := r.call("POST", "/link/start", map[string]any{})
+	id := out["link_id"]
+	f := r.back.made[len(r.back.made)-1]
+	f.mu.Lock()
+	f.jid = types.NewJID("447700900888", types.DefaultUserServer)
+	f.mu.Unlock()
+	f.emit(&events.PairSuccess{ID: f.JID()}) // paired; Connected has not come yet
+	r.clock = r.clock.Add(linkLifetime + time.Second)
+	_, out = r.call("POST", "/link/status", map[string]any{"link_id": id})
+	if f.forgotten {
+		t.Fatal("a paired session's keys were deleted when the link window ran out")
+	}
+	if out["state"] != "linked" {
+		t.Fatalf("a paired session did not become an account: %v", out)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"runtime"
+	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -85,20 +86,37 @@ func (b *meowBackend) Existing(ctx context.Context) ([]Client, error) {
 	return out, nil
 }
 
+// meowClient registers ONE whatsmeow event handler, once, and SetHandler only
+// swaps the function it calls. SetHandler is called from inside an event
+// handler (a QR link becomes an account on its Connected event), and
+// whatsmeow holds its handler-list read lock while dispatching, so adding or
+// removing a whatsmeow handler there deadlocks the whole connection. That
+// deadlock is what left a scanned phone at "connecting" for ever, until the
+// link timed out and deleted the freshly paired keys (2026-11-01).
 type meowClient struct {
-	cli     *whatsmeow.Client
-	handler uint32
+	cli *whatsmeow.Client
+
+	hmu     sync.RWMutex
+	handler func(evt any)
 }
 
 func wrap(d *store.Device) *meowClient {
-	return &meowClient{cli: whatsmeow.NewClient(d, waLog.Noop)}
+	m := &meowClient{cli: whatsmeow.NewClient(d, waLog.Noop)}
+	m.cli.AddEventHandler(func(evt any) {
+		m.hmu.RLock()
+		fn := m.handler
+		m.hmu.RUnlock()
+		if fn != nil {
+			fn(evt)
+		}
+	})
+	return m
 }
 
 func (m *meowClient) SetHandler(fn func(evt any)) {
-	if m.handler != 0 {
-		m.cli.RemoveEventHandler(m.handler)
-	}
-	m.handler = m.cli.AddEventHandler(func(evt any) { fn(evt) })
+	m.hmu.Lock()
+	m.handler = fn
+	m.hmu.Unlock()
 }
 
 func (m *meowClient) Connect() error    { return m.cli.Connect() }
