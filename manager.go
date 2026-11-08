@@ -93,10 +93,11 @@ type link struct {
 }
 
 type Manager struct {
-	backend Backend
-	store   *Store
-	dir     string
-	limits  Limits
+	backend  Backend
+	store    *Store
+	dir      string
+	limits   Limits
+	readOnly bool // --read-only: nothing is ever written to WhatsApp
 
 	// Seams for tests: time, waiting, and the jitter source.
 	now    func() time.Time
@@ -697,6 +698,9 @@ type SendResult struct {
 
 // Send sends ONE message to ONE chat. There is no way to give it a list.
 func (m *Manager) Send(ctx context.Context, req SendRequest) (*SendResult, *Refusal) {
+	if m.readOnly {
+		return nil, readOnlyRefusal()
+	}
 	a, r := m.account(req.Account)
 	if r != nil {
 		return nil, r
@@ -883,6 +887,9 @@ func (m *Manager) build(ctx context.Context, a *account, req SendRequest, quoted
 // MarkRead tells WhatsApp the chat has been read (the other person sees blue
 // ticks, if the account has read receipts on).
 func (m *Manager) MarkRead(ctx context.Context, acct, who string) (int, string, *Refusal) {
+	if m.readOnly {
+		return 0, "", readOnlyRefusal()
+	}
 	a, r := m.account(acct)
 	if r != nil {
 		return 0, "", r

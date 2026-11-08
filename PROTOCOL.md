@@ -32,7 +32,7 @@ a chat or contact.
 
 | Route | Body or query | Answer |
 |---|---|---|
-| `GET /health` | | `{"ok", "version", "accounts": [...]}` |
+| `GET /health` | | `{"ok", "version", "read_only", "accounts": [...]}` |
 | `POST /shutdown` | | `{"ok": true}`, then the helper exits |
 | `GET /accounts` | | `{"accounts": [{"account", "number", "name", "state", "detail", "usable"}]}` |
 | `POST /accounts/remove` | `{"account"}` | Unlinks the number and deletes its keys, history and fetched files. `{"ok", "detail"}` |
@@ -97,3 +97,7 @@ absent, `qr` is the only way to link, and the attempt ends when the last payload
 | `messages.db` | Chats, messages, contact names, the record of sends |
 | `media/<account>/` | Files fetched with `POST /media` |
 | `helper.log` | Operation names only. Never a message, a name or a number |
+
+## Read-only mode
+
+Started with `--read-only`, `POST /send` and `POST /read` answer 403 with code `read_only` and send nothing. Typing and presence are never sent. Linking, `/chats`, `/messages`, `/search`, `/contacts` and `/media` work as normal. `GET /health` and `helper.json` carry `read_only: true`, and `--version --read-only` prints a second line, `read-only`.

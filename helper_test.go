@@ -192,7 +192,10 @@ type rig struct {
 }
 
 // newRig starts a helper with one linked number that has a chat with Alice.
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T) *rig { return newRigMode(t, false) }
+
+// newRigMode is newRig, optionally started with --read-only.
+func newRigMode(t *testing.T, readOnly bool) *rig {
 	t.Helper()
 	r := &rig{t: t, clock: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), dir: t.TempDir()}
 	store, err := OpenStore(filepath.Join(r.dir, "messages.db"))
@@ -210,6 +213,7 @@ func newRig(t *testing.T) *rig {
 		r.clock = r.clock.Add(d)
 	}
 	r.m.jitter = func() float64 { return 0.5 }
+	r.m.SetReadOnly(readOnly)
 	if err := r.m.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
