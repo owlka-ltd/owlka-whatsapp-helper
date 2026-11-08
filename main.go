@@ -29,6 +29,8 @@ type StateFile struct {
 	Token   string `json:"token"`
 	PID     int    `json:"pid"`
 	Version string `json:"version"`
+	// ReadOnly is true when started with --read-only.
+	ReadOnly bool `json:"read_only"`
 }
 
 const stateName = "helper.json"
@@ -55,23 +57,27 @@ func alreadyRunning(dir string) bool {
 
 func main() {
 	dir := flag.String("dir", "", "folder for this user's WhatsApp session and message history (required)")
+	readOnly := flag.Bool("read-only", false, "never send, mark as read, or show typing: link, read history and list chats only")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(Version)
+		if *readOnly {
+			fmt.Println("read-only")
+		}
 		return
 	}
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "owlka-whatsapp: --dir is required")
 		os.Exit(2)
 	}
-	if err := run(*dir); err != nil {
+	if err := run(*dir, *readOnly); err != nil {
 		fmt.Fprintln(os.Stderr, "owlka-whatsapp:", err)
 		os.Exit(1)
 	}
 }
 
-func run(dir string) error {
+func run(dir string, readOnly bool) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -102,6 +108,7 @@ func run(dir string) error {
 		return fmt.Errorf("open session store: %w", err)
 	}
 	manager := NewManager(backend, store, dir)
+	manager.SetReadOnly(readOnly)
 	if err := manager.Start(ctx); err != nil {
 		return fmt.Errorf("start sessions: %w", err)
 	}
@@ -116,7 +123,7 @@ func run(dir string) error {
 	if _, err := rand.Read(tok); err != nil {
 		return err
 	}
-	state := StateFile{Port: ln.Addr().(*net.TCPAddr).Port, Token: hex.EncodeToString(tok), PID: os.Getpid(), Version: Version}
+	state := StateFile{Port: ln.Addr().(*net.TCPAddr).Port, Token: hex.EncodeToString(tok), PID: os.Getpid(), Version: Version, ReadOnly: readOnly}
 	raw, _ := json.Marshal(state)
 	statePath := filepath.Join(dir, stateName)
 	tmp := statePath + ".tmp"
@@ -134,7 +141,7 @@ func run(dir string) error {
 		defer done()
 		_ = srv.Shutdown(shut)
 	}()
-	log.Printf("helper %s listening on 127.0.0.1:%d", Version, state.Port)
+	log.Printf("helper %s listening on 127.0.0.1:%d (read-only: %v)", Version, state.Port, readOnly)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}

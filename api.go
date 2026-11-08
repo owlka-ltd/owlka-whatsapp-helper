@@ -63,6 +63,8 @@ func fail(w http.ResponseWriter, status int, r *Refusal) {
 func refused(w http.ResponseWriter, r *Refusal) {
 	status := http.StatusBadRequest
 	switch r.Code {
+	case "read_only":
+		status = http.StatusForbidden
 	case "rate_limited", "broadcast", "new_number_limit":
 		status = http.StatusTooManyRequests
 	case "no_account", "no_chat", "no_message", "no_link":
@@ -98,7 +100,7 @@ func limitOf(r *http.Request, def, max int) int {
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
-	reply(w, map[string]any{"ok": true, "version": Version, "accounts": a.m.Accounts()})
+	reply(w, map[string]any{"ok": true, "version": Version, "read_only": a.m.ReadOnly(), "accounts": a.m.Accounts()})
 }
 
 func (a *API) shutdown(w http.ResponseWriter, _ *http.Request) {
