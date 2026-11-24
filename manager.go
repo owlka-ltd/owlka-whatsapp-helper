@@ -47,6 +47,8 @@ type account struct {
 	sendMu     sync.Mutex // one send at a time per number
 	lastSend   time.Time
 	unrecorded []SendRecord // sends the store failed to record; still counted
+	takeovers  []time.Time  // when another copy last took the connection (last hour)
+	recovering bool         // a reconnect after a takeover is running
 }
 
 func (a *account) set(state, detail string) {
@@ -107,6 +109,11 @@ type Manager struct {
 	mu       sync.Mutex
 	accounts map[string]*account
 	links    map[string]*link
+
+	ctx context.Context // the helper's lifetime; set by Start
+	// takeoverDelays is how long to wait before each reconnect attempt after
+	// another copy took the connection (a seam for tests).
+	takeoverDelays []time.Duration
 }
 
 func NewManager(backend Backend, store *Store, dir string) *Manager {
@@ -119,14 +126,17 @@ func NewManager(backend Backend, store *Store, dir string) *Manager {
 			case <-time.After(d):
 			}
 		},
-		jitter:   mrand.Float64,
-		accounts: map[string]*account{},
-		links:    map[string]*link{},
+		jitter:         mrand.Float64,
+		ctx:            context.Background(),
+		takeoverDelays: []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second, 2 * time.Minute, 5 * time.Minute},
+		accounts:       map[string]*account{},
+		links:          map[string]*link{},
 	}
 }
 
 // Start connects every number already linked on this computer.
 func (m *Manager) Start(ctx context.Context) error {
+	m.ctx = ctx
 	clients, err := m.backend.Existing(ctx)
 	if err != nil {
 		return err
@@ -435,7 +445,8 @@ func (m *Manager) handle(a *account, evt any) {
 	case *events.LoggedOut:
 		a.set("logged_out", "This happens when the device is removed on the phone, or the phone has been offline for about two weeks.")
 	case *events.StreamReplaced:
-		a.set("connecting", "Another copy of this helper took over the connection.")
+		a.set("connecting", "Another copy of this helper took over the connection. Reconnecting.")
+		go m.reconnectAfterTakeover(a)
 	case *events.TemporaryBan:
 		a.set("restricted", fmt.Sprintf("WhatsApp gave the reason %q and a wait of %s.", e.Code.String(), e.Expire.Round(time.Minute)))
 	case *events.ClientOutdated:
@@ -462,6 +473,58 @@ func (m *Manager) handle(a *account, evt any) {
 	case *events.PushName:
 		m.logErr("store name", m.store.PutContact(a.id, m.chatID(a, e.JID), "", e.NewPushName))
 	}
+}
+
+// maxTakeoversPerHour: if the connection is taken this often, something else is
+// using the same session and reconnecting would only start a fight. Stop and say so.
+const maxTakeoversPerHour = 6
+
+// reconnectAfterTakeover brings a number back after WhatsApp said another
+// connection replaced this one. whatsmeow does not reconnect by itself after
+// that event, so before 24 Nov 2026 the number stayed "connecting" for hours.
+// This process holds the folder lock, so no second copy of this helper is on
+// the folder; the usual cause is a start that raced an older build. It gives up
+// (and says so in /accounts) rather than fight a real second user of the session.
+func (m *Manager) reconnectAfterTakeover(a *account) {
+	now := m.now()
+	a.mu.Lock()
+	kept := a.takeovers[:0]
+	for _, t := range a.takeovers {
+		if now.Sub(t) < time.Hour {
+			kept = append(kept, t)
+		}
+	}
+	a.takeovers = append(kept, now)
+	tooMany := len(a.takeovers) > maxTakeoversPerHour
+	if a.recovering {
+		a.mu.Unlock()
+		return
+	}
+	if !tooMany {
+		a.recovering = true
+	}
+	a.mu.Unlock()
+	if tooMany {
+		a.set("connecting", "Another copy keeps taking over this number's connection, so this helper stopped reconnecting. "+
+			"Quit anything else using this WhatsApp link, then restart the helper.")
+		return
+	}
+	defer func() { a.mu.Lock(); a.recovering = false; a.mu.Unlock() }()
+	for _, d := range m.takeoverDelays {
+		m.sleep(m.ctx, d)
+		if m.ctx.Err() != nil {
+			return
+		}
+		a.client.Disconnect()
+		if err := a.client.Connect(); err != nil {
+			a.set("connecting", "Another copy took over the connection and reconnecting failed. It retries.")
+			m.logErr("reconnect after takeover", err)
+			continue
+		}
+		log.Printf("reconnected after another connection took over")
+		return // the Connected event sets the state
+	}
+	a.set("connecting", "Another copy took over the connection and this helper could not reconnect. Restart the helper.")
 }
 
 // logErr records a failure to keep local history. Operation only: never a
