@@ -93,6 +93,7 @@ absent, `qr` is the only way to link, and the attempt ends when the last payload
 | File | What |
 |---|---|
 | `helper.json` | Port, token, pid, version |
+| `helper.lock` | Kernel lock (flock / LockFileEx) held for the life of the process. A second start on a locked folder exits 0 and touches nothing; the kernel frees the lock on any exit. It is never decided by an HTTP probe, so a busy helper is never started over. |
 | `session.db` | The linked-device keys for every linked number |
 | `messages.db` | Chats, messages, contact names, the record of sends |
 | `media/<account>/` | Files fetched with `POST /media` |
@@ -101,3 +102,7 @@ absent, `qr` is the only way to link, and the attempt ends when the last payload
 ## Read-only mode
 
 Started with `--read-only`, `POST /send` and `POST /read` answer 403 with code `read_only` and send nothing. Typing and presence are never sent. Linking, `/chats`, `/messages`, `/search`, `/contacts` and `/media` work as normal. `GET /health` and `helper.json` carry `read_only: true`, and `--version --read-only` prints a second line, `read-only`.
+
+## Reconnecting
+
+If WhatsApp reports that another connection replaced this one (`StreamReplaced`), the helper reconnects by itself (5 s, 15 s, 45 s, 2 min, 5 min). If it cannot, or the connection is taken more than 6 times in an hour, `/accounts` keeps `state: connecting`, `usable: false` and a `detail` saying so.

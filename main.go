@@ -35,24 +35,23 @@ type StateFile struct {
 
 const stateName = "helper.json"
 
-// alreadyRunning reports whether another helper is serving this folder.
-func alreadyRunning(dir string) bool {
+// lockName is the file whose kernel lock means "a helper is running on this folder".
+const lockName = "helper.lock"
+
+// legacyHelperRunning reports whether a helper from an older build (one that
+// holds no folder lock) is still alive on this folder. It reads helper.json's
+// pid and asks the operating system; it never uses a network probe, because a
+// busy helper that is slow to answer is still alive and must be left alone.
+func legacyHelperRunning(dir string) bool {
 	raw, err := os.ReadFile(filepath.Join(dir, stateName))
 	if err != nil {
 		return false
 	}
 	var st StateFile
-	if json.Unmarshal(raw, &st) != nil || st.Port == 0 {
+	if json.Unmarshal(raw, &st) != nil {
 		return false
 	}
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/health", st.Port), nil)
-	req.Header.Set("Authorization", "Bearer "+st.Token)
-	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return pidIsHelper(st.PID)
 }
 
 func main() {
@@ -81,15 +80,27 @@ func run(dir string, readOnly bool) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// ONE helper per folder, decided by a kernel lock, never by asking over HTTP:
+	// on 24 Nov 2026 a helper too busy to answer in 3 s was started over, both
+	// connected with the same keys, and WhatsApp cut one off. The lock is taken
+	// before anything else is touched (helper.json, the databases, the network).
+	lock, got, err := lockFolder(filepath.Join(dir, lockName))
+	if err != nil {
+		return fmt.Errorf("lock folder: %w", err)
+	}
+	if !got {
+		return nil // another helper holds this folder; it keeps the session
+	}
+	defer lock.Close()
+	if legacyHelperRunning(dir) {
+		return nil // an older build's helper, which holds no lock, is still alive here
+	}
 	// Session keys and messages: this user only.
 	_ = os.Chmod(dir, 0o700)
 	for _, name := range []string{"messages.db", "session.db"} {
 		if f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_RDWR, 0o600); err == nil {
 			f.Close()
 		}
-	}
-	if alreadyRunning(dir) {
-		return nil // one helper per folder; the running one keeps the session
 	}
 	if logFile, err := os.OpenFile(filepath.Join(dir, "helper.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		log.SetOutput(logFile)

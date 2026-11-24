@@ -51,6 +51,8 @@ type fakeClient struct {
 	onWA        map[string]bool
 	sendErr     error
 	loggedOut   bool
+	connects    int
+	connectErr  error
 	forgotten   bool
 	media       []byte
 }
@@ -75,6 +77,11 @@ func (f *fakeClient) Connect() error {
 		return nil
 	}
 	f.mu.Lock()
+	f.connects++
+	if f.connectErr != nil {
+		f.mu.Unlock()
+		return f.connectErr
+	}
 	f.connected = true
 	f.mu.Unlock()
 	f.emit(&events.Connected{})
